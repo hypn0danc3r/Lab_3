@@ -44,8 +44,10 @@ class ImageProcessorApp:
                   command=self.show_histogram).pack(side=tk.LEFT, padx=5)
         ttk.Button(control_frame, text="Линейное контрастирование", 
                   command=self.linear_contrast).pack(side=tk.LEFT, padx=5)
-        ttk.Button(control_frame, text="Эквализация гистограммы", 
+        ttk.Button(control_frame, text="Эквализация RGB", 
                   command=self.equalize_histogram).pack(side=tk.LEFT, padx=5)
+        ttk.Button(control_frame, text="Эквализация HSV", 
+                  command=self.equalize_histogram_hsv).pack(side=tk.LEFT, padx=5)
         ttk.Button(control_frame, text="Сравнить методы", 
                   command=self.compare_methods).pack(side=tk.LEFT, padx=5)
         ttk.Button(control_frame, text="Сохранить результат", 
@@ -326,6 +328,130 @@ class ImageProcessorApp:
         
         self.status_var.set("Эквализация гистограммы применена")
     
+    def equalize_histogram_hsv(self):
+        """Применить эквализацию гистограммы в пространстве HSV (только для яркости V)"""
+        if self.original_image is None:
+            messagebox.showwarning("Предупреждение", "Сначала загрузите изображение!")
+            return
+        
+        # Конвертируем RGB в HSV
+        img_array = np.array(self.original_image)
+        
+        # Конвертируем в HSV (нормализованные значения 0-1)
+        img_hsv = self.rgb_to_hsv(img_array)
+        
+        # Извлекаем канал V (яркость)
+        v_channel = img_hsv[:, :, 2]
+        
+        # Масштабируем V в диапазон 0-255 для гистограммы
+        v_channel_scaled = (v_channel * 255).astype(np.uint8)
+        
+        # Вычисляем гистограмму для канала V
+        hist, bins = np.histogram(v_channel_scaled.flatten(), 256, [0, 256])
+        cdf = hist.cumsum()
+        
+        # Нормализуем CDF
+        if cdf.max() != cdf.min():
+            cdf_normalized = (cdf - cdf.min()) * 255 / (cdf.max() - cdf.min())
+        else:
+            cdf_normalized = cdf
+        
+        # Применяем эквализацию только к каналу V
+        v_equalized = np.interp(v_channel_scaled.flatten(), bins[:-1], cdf_normalized)
+        v_equalized = v_equalized.reshape(v_channel.shape)
+        
+        # Возвращаем обратно в диапазон 0-1
+        img_hsv[:, :, 2] = v_equalized / 255.0
+        
+        # Конвертируем обратно в RGB
+        img_rgb = self.hsv_to_rgb(img_hsv)
+        
+        # Создаем изображение
+        self.processed_image = Image.fromarray(img_rgb.astype(np.uint8))
+        
+        # Отображаем результат
+        self.display_image(self.processed_image, self.processed_label)
+        
+        self.status_var.set("Эквализация гистограммы HSV применена (только яркость)")
+    
+    def rgb_to_hsv(self, rgb_array):
+        """Конвертирует RGB (0-255) в HSV (нормализованные значения 0-1)"""
+        rgb_normalized = rgb_array / 255.0
+        r, g, b = rgb_normalized[:, :, 0], rgb_normalized[:, :, 1], rgb_normalized[:, :, 2]
+        
+        max_c = np.maximum(np.maximum(r, g), b)
+        min_c = np.minimum(np.minimum(r, g), b)
+        diff = max_c - min_c
+        
+        # Инициализируем HSV
+        hsv = np.zeros_like(rgb_normalized)
+        
+        # Вычисляем H (Hue)
+        h = np.zeros_like(max_c)
+        
+        # Где max == min, H не определен (серый цвет)
+        mask = diff != 0
+        
+        # Красный доминирует
+        r_mask = mask & (max_c == r)
+        h[r_mask] = (60 * ((g[r_mask] - b[r_mask]) / diff[r_mask]) + 360) % 360
+        
+        # Зеленый доминирует
+        g_mask = mask & (max_c == g)
+        h[g_mask] = (60 * ((b[g_mask] - r[g_mask]) / diff[g_mask]) + 120) % 360
+        
+        # Синий доминирует
+        b_mask = mask & (max_c == b)
+        h[b_mask] = (60 * ((r[b_mask] - g[b_mask]) / diff[b_mask]) + 240) % 360
+        
+        # Нормализуем H к диапазону 0-1
+        hsv[:, :, 0] = h / 360.0
+        
+        # Вычисляем S (Saturation)
+        s = np.zeros_like(max_c)
+        s[max_c != 0] = diff[max_c != 0] / max_c[max_c != 0]
+        hsv[:, :, 1] = s
+        
+        # Вычисляем V (Value)
+        hsv[:, :, 2] = max_c
+        
+        return hsv
+    
+    def hsv_to_rgb(self, hsv_array):
+        """Конвертирует HSV (нормализованные значения 0-1) в RGB (0-255)"""
+        h = hsv_array[:, :, 0] * 360.0  # Переводим в градусы
+        s = hsv_array[:, :, 1]
+        v = hsv_array[:, :, 2]
+        
+        c = v * s
+        x = c * (1 - np.abs((h / 60.0) % 2 - 1))
+        m = v - c
+        
+        rgb = np.zeros_like(hsv_array)
+        
+        # Определяем сектор на цветовом круге
+        mask0 = (h >= 0) & (h < 60)
+        mask1 = (h >= 60) & (h < 120)
+        mask2 = (h >= 120) & (h < 180)
+        mask3 = (h >= 180) & (h < 240)
+        mask4 = (h >= 240) & (h < 300)
+        mask5 = (h >= 300) & (h < 360)
+        
+        rgb[mask0] = np.stack([c[mask0], x[mask0], np.zeros_like(c[mask0])], axis=-1)
+        rgb[mask1] = np.stack([x[mask1], c[mask1], np.zeros_like(c[mask1])], axis=-1)
+        rgb[mask2] = np.stack([np.zeros_like(c[mask2]), c[mask2], x[mask2]], axis=-1)
+        rgb[mask3] = np.stack([np.zeros_like(c[mask3]), x[mask3], c[mask3]], axis=-1)
+        rgb[mask4] = np.stack([x[mask4], np.zeros_like(c[mask4]), c[mask4]], axis=-1)
+        rgb[mask5] = np.stack([c[mask5], np.zeros_like(c[mask5]), x[mask5]], axis=-1)
+        
+        # Добавляем m
+        rgb += m[:, :, np.newaxis]
+        
+        # Масштабируем в диапазон 0-255
+        rgb = (rgb * 255.0).clip(0, 255)
+        
+        return rgb
+    
     def compare_methods(self):
         """Сравнить методы обработки"""
         if self.original_image is None:
@@ -335,7 +461,7 @@ class ImageProcessorApp:
         # Создаем окно сравнения
         compare_window = tk.Toplevel(self.root)
         compare_window.title("Сравнение методов обработки")
-        compare_window.geometry("1400x800")
+        compare_window.geometry("1600x900")
         
         # Применяем оба метода используя ТОТ ЖЕ алгоритм, что и в основных функциях
         img_array = np.array(self.original_image, dtype=np.float64)
@@ -375,30 +501,54 @@ class ImageProcessorApp:
             equalized_channels.append(equalized_channel)
         equalized_result = Image.fromarray(np.dstack(equalized_channels))
         
-        # Создаем фигуру с 4 изображениями
-        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        # Эквализация HSV (тот же алгоритм, что в equalize_histogram_hsv)
+        img_hsv = self.rgb_to_hsv(img_array.astype(np.uint8))
+        v_channel = img_hsv[:, :, 2]
+        v_channel_scaled = (v_channel * 255).astype(np.uint8)
+        hist_v, bins_v = np.histogram(v_channel_scaled.flatten(), 256, [0, 256])
+        cdf_v = hist_v.cumsum()
+        if cdf_v.max() != cdf_v.min():
+            cdf_normalized_v = (cdf_v - cdf_v.min()) * 255 / (cdf_v.max() - cdf_v.min())
+        else:
+            cdf_normalized_v = cdf_v
+        v_equalized = np.interp(v_channel_scaled.flatten(), bins_v[:-1], cdf_normalized_v)
+        v_equalized = v_equalized.reshape(v_channel.shape)
+        img_hsv[:, :, 2] = v_equalized / 255.0
+        img_rgb_hsv = self.hsv_to_rgb(img_hsv)
+        equalized_hsv_result = Image.fromarray(img_rgb_hsv.astype(np.uint8))
+        
+        # Создаем фигуру с 6 изображениями (2 ряда по 3)
+        fig, axes = plt.subplots(2, 3, figsize=(18, 10))
         
         # Конвертируем PIL изображения в numpy массивы для matplotlib
         orig_array = np.array(self.original_image)
         linear_array = np.array(linear_result)
         equal_array = np.array(equalized_result)
+        equal_hsv_array = np.array(equalized_hsv_result)
         
+        # Первый ряд: изображения
         axes[0, 0].imshow(orig_array)
-        axes[0, 0].set_title('Оригинальное изображение')
+        axes[0, 0].set_title('Оригинальное изображение', fontsize=12, fontweight='bold')
         axes[0, 0].axis('off')
         
         axes[0, 1].imshow(linear_array)
-        axes[0, 1].set_title('Линейное контрастирование')
+        axes[0, 1].set_title('Линейное контрастирование', fontsize=12, fontweight='bold')
         axes[0, 1].axis('off')
         
-        axes[1, 0].imshow(equal_array)
-        axes[1, 0].set_title('Эквализация гистограммы')
+        axes[0, 2].imshow(equal_array)
+        axes[0, 2].set_title('Эквализация RGB', fontsize=12, fontweight='bold')
+        axes[0, 2].axis('off')
+        
+        # Второй ряд: HSV результат и гистограммы
+        axes[1, 0].imshow(equal_hsv_array)
+        axes[1, 0].set_title('Эквализация HSV (яркость)', fontsize=12, fontweight='bold')
         axes[1, 0].axis('off')
         
         # Гистограммы - показываем все три канала для лучшего понимания
         orig_hist = self.original_image.histogram()
         linear_hist = linear_result.histogram()
         equal_hist = equalized_result.histogram()
+        equal_hsv_hist = equalized_hsv_result.histogram()
         
         x = range(256)
         # Показываем все три канала оригинального изображения (средняя яркость)
@@ -406,14 +556,26 @@ class ImageProcessorApp:
         linear_combined = [(linear_hist[i] + linear_hist[i+256] + linear_hist[i+512]) / 3 for i in range(256)]
         equal_combined = [(equal_hist[i] + equal_hist[i+256] + equal_hist[i+512]) / 3 for i in range(256)]
         
-        axes[1, 1].plot(x, orig_combined, 'r-', linewidth=2, alpha=0.7, label='Оригинал')
-        axes[1, 1].plot(x, linear_combined, 'g-', linewidth=2, alpha=0.7, label='Линейное')
-        axes[1, 1].plot(x, equal_combined, 'b-', linewidth=2, alpha=0.7, label='Эквализация')
-        axes[1, 1].set_title('Сравнение гистограмм (средняя яркость всех каналов)')
+        # Гистограмма сравнения методов
+        axes[1, 1].plot(x, orig_combined, 'gray', linewidth=2, alpha=0.6, label='Оригинал')
+        axes[1, 1].plot(x, linear_combined, 'orange', linewidth=2, alpha=0.8, label='Линейное')
+        axes[1, 1].plot(x, equal_combined, 'blue', linewidth=2, alpha=0.8, label='Эквализация RGB')
+        axes[1, 1].set_title('Сравнение гистограмм', fontsize=11, fontweight='bold')
         axes[1, 1].set_xlabel('Интенсивность (0-255)')
         axes[1, 1].set_ylabel('Количество пикселей')
         axes[1, 1].legend()
         axes[1, 1].grid(True, alpha=0.3)
+        
+        # Сравнение RGB vs HSV эквализации
+        equal_hsv_combined = [(equal_hsv_hist[i] + equal_hsv_hist[i+256] + equal_hsv_hist[i+512]) / 3 for i in range(256)]
+        axes[1, 2].plot(x, orig_combined, 'gray', linewidth=2, alpha=0.6, label='Оригинал')
+        axes[1, 2].plot(x, equal_combined, 'blue', linewidth=2, alpha=0.8, label='Эквализация RGB')
+        axes[1, 2].plot(x, equal_hsv_combined, 'green', linewidth=2, alpha=0.8, label='Эквализация HSV')
+        axes[1, 2].set_title('RGB vs HSV эквализация', fontsize=11, fontweight='bold')
+        axes[1, 2].set_xlabel('Интенсивность (0-255)')
+        axes[1, 2].set_ylabel('Количество пикселей')
+        axes[1, 2].legend()
+        axes[1, 2].grid(True, alpha=0.3)
         
         plt.tight_layout()
         
